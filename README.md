@@ -9,6 +9,19 @@ When you attack an NPC in a multi-combat area, Multi Tagger highlights every oth
 already in combat (they show the `*` prefix), your current target, and dead NPCs
 are skipped, so only the ones that still need tagging light up.
 
+## Demo
+
+<!--
+  Add a demo clip here:
+  - GIF committed to the repo:  ![Multi Tagger demo](assets/demo.gif)
+  - Video via GitHub's CDN:     drag an mp4/webm into the GitHub README editor
+                                (or any issue/PR) and paste the resulting
+                                https://github.com/user-attachments/assets/... URL here.
+  Then remove this comment and the line below.
+-->
+
+_Demo coming soon._
+
 ## Features
 
 - **Highlights untagged same-type NPCs** while you are in a multi-combat area, using
