@@ -11,23 +11,7 @@ are skipped, so only the ones that still need tagging light up.
 
 ## Demo
 
-<!--
-  How media renders on the runelite.net plugin page (it shows this README, pinned to
-  the commit in the plugin-hub manifest):
-    - PNG/JPG committed to the repo -> shown INLINE on runelite.net and on GitHub.
-        ![Multi Tagger demo](assets/demo.png)
-    - GIF committed to the repo     -> INLINE on GitHub, but shown as a LINK on
-                                       runelite.net (they linkify gifs).
-        ![Multi Tagger demo](assets/demo.gif)
-    - Video (mp4/webm)              -> INLINE on GitHub if uploaded via the README
-                                       editor / an issue (user-attachments URL), but
-                                       NOT rendered on runelite.net.
-  So use a PNG for the guaranteed inline demo, and optionally add a gif/video too.
-  Whatever is repo-hosted must exist at the commit referenced in the plugin-hub manifest.
-  Then remove this comment and the line below.
--->
-
-_Demo coming soon._
+![Multi Tagger demo](assets/demo.gif)
 
 ## Features
 
