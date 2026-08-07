@@ -351,16 +351,24 @@ public class MultiTaggerPlugin extends Plugin
 	}
 
 	/**
-	 * Whether an NPC is "tagged" - i.e. shows the {@code *} prefix in the menu, meaning
-	 * it is in combat. The {@code *} corresponds to the NPC having a health bar, but the
-	 * game only renders <b>6 health bars at once</b>: in a large stack (e.g. barraging
-	 * dust devils) a tagged NPC beyond the 6 reports {@link NPC#getHealthRatio()} == -1
-	 * even though it carries the {@code *}.
+	 * Whether an NPC is "tagged" - i.e. shows the {@code *} prefix in the menu, meaning it
+	 * is in combat. An NPC carries the {@code *} in three cases, so we treat it as tagged
+	 * when ANY hold:
+	 * <ol>
+	 *   <li>it currently has a visible health bar ({@link NPC#getHealthRatio()} != -1); or</li>
+	 *   <li>we have seen it with a health bar since it spawned (it is in our per-NPC HP
+	 *       cache {@link #lastKnownHpPercent}). The game only renders <b>6 health bars at
+	 *       once</b>, so a tagged NPC beyond the 6 in a large stack (e.g. barraging dust
+	 *       devils) reports {@code getHealthRatio() == -1} even though it keeps the {@code *};
+	 *       the cache catches those; or</li>
+	 *   <li>it is interacting with the local player. An aggressive NPC that has aggroed and
+	 *       is attacking us carries the {@code *} the moment it targets us, before we have
+	 *       damaged it - so it has no health bar and isn't cached yet. Without this it would
+	 *       stay highlighted while attacking us.</li>
+	 * </ol>
 	 *
-	 * <p>So we treat an NPC as tagged when it currently has a health bar OR we have ever
-	 * seen it with one since it spawned (it is in {@link #lastKnownHpPercent}, our per-NPC
-	 * HP cache). This catches the health-bar-limited members of a stack, which a raw
-	 * {@code getHealthRatio()} check misses. Entries are pruned on despawn.</p>
+	 * <p>We use {@code getInteracting() == localPlayer} (not {@code != null}): an NPC merely
+	 * interacting with something else is not necessarily engaged with us.</p>
 	 */
 	private boolean isTagged(NPC npc)
 	{
@@ -368,7 +376,11 @@ public class MultiTaggerPlugin extends Plugin
 		{
 			return true;
 		}
-		return lastKnownHpPercent.containsKey(npc.getIndex());
+		if (lastKnownHpPercent.containsKey(npc.getIndex()))
+		{
+			return true;
+		}
+		return npc.getInteracting() == client.getLocalPlayer();
 	}
 
 	/**
