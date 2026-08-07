@@ -116,6 +116,17 @@ public interface MultiTaggerConfig extends Config
 
 	@ConfigItem(
 		position = 7,
+		keyName = "ignoredNames",
+		name = "Ignored NPCs",
+		description = "Comma-separated NPC names to never highlight, even in multi-combat (case-insensitive). Use this to limit tagging to specific monsters."
+	)
+	default String ignoredNames()
+	{
+		return "";
+	}
+
+	@ConfigItem(
+		position = 8,
 		keyName = "maxDistance",
 		name = "Max distance (tiles)",
 		description = "Only highlight NPCs within this many tiles of you, so walking away from a monster that resets clears its highlight promptly. 0 = no limit."
@@ -126,18 +137,18 @@ public interface MultiTaggerConfig extends Config
 	}
 
 	@ConfigItem(
-		position = 8,
+		position = 9,
 		keyName = "showMenuHp",
 		name = "Show HP in menu",
 		description = "Appends each NPC's current HP to its name in the right-click menu, so you can tell stacked monsters apart."
 	)
 	default boolean showMenuHp()
 	{
-		return true;
+		return false;
 	}
 
 	@ConfigItem(
-		position = 9,
+		position = 10,
 		keyName = "menuHpMode",
 		name = "Menu HP format",
 		description = "Whether the menu HP is shown as estimated hitpoints, a percentage, or both."
@@ -148,7 +159,7 @@ public interface MultiTaggerConfig extends Config
 	}
 
 	@ConfigItem(
-		position = 10,
+		position = 11,
 		keyName = "menuHpColor",
 		name = "Colour menu HP",
 		description = "Colour the menu HP from green (full) to red (low) so low-HP monsters stand out."
@@ -159,7 +170,7 @@ public interface MultiTaggerConfig extends Config
 	}
 
 	@ConfigItem(
-		position = 11,
+		position = 12,
 		keyName = "debugLogging",
 		name = "Debug logging",
 		description = "Logs multi-combat state and per-NPC combat state to help diagnose why NPCs are or aren't highlighted. Leave off for normal play."

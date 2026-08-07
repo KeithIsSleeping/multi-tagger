@@ -27,10 +27,12 @@ package com.multitagger;
 import com.google.inject.Provides;
 import java.awt.Color;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashSet;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
-import java.util.function.Function;
 import javax.inject.Inject;
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.Actor;
@@ -48,15 +50,14 @@ import net.runelite.api.events.HitsplatApplied;
 import net.runelite.api.events.InteractingChanged;
 import net.runelite.api.events.MenuOpened;
 import net.runelite.api.events.NpcDespawned;
-import net.runelite.client.callback.ClientThread;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.game.NPCManager;
-import net.runelite.client.game.npcoverlay.HighlightedNpc;
-import net.runelite.client.game.npcoverlay.NpcOverlayService;
 import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginDescriptor;
+import net.runelite.client.ui.overlay.OverlayManager;
 import net.runelite.client.util.ColorUtil;
+import net.runelite.client.util.Text;
 
 @Slf4j
 @PluginDescriptor(
@@ -73,10 +74,10 @@ public class MultiTaggerPlugin extends Plugin
 	private MultiTaggerConfig config;
 
 	@Inject
-	private NpcOverlayService npcOverlayService;
+	private OverlayManager overlayManager;
 
 	@Inject
-	private ClientThread clientThread;
+	private MultiTaggerOverlay overlay;
 
 	@Inject
 	private NPCManager npcManager;
@@ -95,7 +96,14 @@ public class MultiTaggerPlugin extends Plugin
 	// so for the rest we fall back to this remembered value instead of assuming full HP.
 	private final Map<Integer, Integer> lastKnownHpPercent = new HashMap<>();
 
-	private final Function<NPC, HighlightedNpc> highlighter = this::highlight;
+	// NPCs to highlight this tick. Recomputed each game tick and rendered by our own
+	// overlay (not the shared NpcOverlayService, which would let another plugin's
+	// highlighter suppress ours). Read on the client thread by the overlay.
+	private final Set<NPC> highlightedNpcs = new HashSet<>();
+
+	// Parsed ignore list (lowercased names) cached against the raw config string.
+	private final Set<String> ignoredNames = new HashSet<>();
+	private String ignoredRaw = null;
 
 	@Provides
 	MultiTaggerConfig provideConfig(ConfigManager configManager)
@@ -103,19 +111,26 @@ public class MultiTaggerPlugin extends Plugin
 		return configManager.getConfig(MultiTaggerConfig.class);
 	}
 
+	/** NPCs Multi Tagger wants to highlight this tick (read by {@link MultiTaggerOverlay}). */
+	Set<NPC> getHighlightedNpcs()
+	{
+		return highlightedNpcs;
+	}
+
 	@Override
 	protected void startUp()
 	{
-		npcOverlayService.registerHighlighter(highlighter);
+		overlayManager.add(overlay);
 	}
 
 	@Override
 	protected void shutDown()
 	{
-		npcOverlayService.unregisterHighlighter(highlighter);
+		overlayManager.remove(overlay);
 		attackedNames.clear();
 		lastAttacked = null;
 		lastKnownHpPercent.clear();
+		highlightedNpcs.clear();
 	}
 
 	@Subscribe
@@ -127,6 +142,7 @@ public class MultiTaggerPlugin extends Plugin
 			attackedNames.clear();
 			lastAttacked = null;
 			lastKnownHpPercent.clear();
+			highlightedNpcs.clear();
 		}
 	}
 
@@ -143,7 +159,7 @@ public class MultiTaggerPlugin extends Plugin
 		}
 		if (rememberAttacked(event.getTarget()))
 		{
-			npcOverlayService.rebuild();
+			recomputeHighlights();
 		}
 	}
 
@@ -154,6 +170,7 @@ public class MultiTaggerPlugin extends Plugin
 		{
 			lastAttacked = null;
 		}
+		highlightedNpcs.remove(event.getNpc());
 		// Index may be reused by a future NPC, so drop the remembered HP.
 		lastKnownHpPercent.remove(event.getNpc().getIndex());
 	}
@@ -191,7 +208,7 @@ public class MultiTaggerPlugin extends Plugin
 		Hitsplat hitsplat = event.getHitsplat();
 		if (hitsplat != null && hitsplat.isMine() && rememberAttacked(event.getActor()))
 		{
-			npcOverlayService.rebuild();
+			recomputeHighlights();
 		}
 	}
 
@@ -212,16 +229,34 @@ public class MultiTaggerPlugin extends Plugin
 			{
 				attackedNames.clear();
 				lastAttacked = null;
-				npcOverlayService.rebuild();
 			}
+			highlightedNpcs.clear();
 			return;
 		}
 
-		// Combat state (health bar) changes over time without spawn events, so refresh
-		// the highlights each tick while there is something to show.
-		if (!attackedNames.isEmpty())
+		// Combat state (health bar), distance and tagged-status all change over time
+		// without spawn events, so recompute which NPCs to highlight each tick.
+		recomputeHighlights();
+	}
+
+	/**
+	 * Rebuild the set of NPCs to highlight from the current world state. Cheap - it just
+	 * scans the loaded NPCs once. The overlay reads this set each frame and pulls live
+	 * geometry from each NPC, so movement is still smooth between ticks.
+	 */
+	private void recomputeHighlights()
+	{
+		highlightedNpcs.clear();
+		if (!inMultiCombat() || attackedNames.isEmpty() || client.getLocalPlayer() == null)
 		{
-			npcOverlayService.rebuild();
+			return;
+		}
+		for (NPC npc : client.getTopLevelWorldView().npcs())
+		{
+			if (shouldHighlight(npc))
+			{
+				highlightedNpcs.add(npc);
+			}
 		}
 	}
 
@@ -241,7 +276,7 @@ public class MultiTaggerPlugin extends Plugin
 			{
 				log.info("[MultiTagger]   {} idx={} interacting={} hp={} dead={} -> highlight={}",
 					name, npc.getIndex(), npc.getInteracting() != null, npc.getHealthRatio(),
-					npc.isDead(), highlight(npc) != null);
+						npc.isDead(), shouldHighlight(npc));
 			}
 		}
 	}
@@ -267,29 +302,36 @@ public class MultiTaggerPlugin extends Plugin
 		return true;
 	}
 
-	private HighlightedNpc highlight(NPC npc)
+	private boolean shouldHighlight(NPC npc)
 	{
 		if (!inMultiCombat() || attackedNames.isEmpty())
 		{
-			return null;
+			return false;
 		}
 
 		String name = npc.getName();
 		if (name == null)
 		{
-			return null;
+			return false;
 		}
 
 		if (config.onlyMostRecent())
 		{
 			if (!name.equals(mostRecentName()))
 			{
-				return null;
+				return false;
 			}
 		}
 		else if (!attackedNames.contains(name))
 		{
-			return null;
+			return false;
+		}
+
+		// Never highlight an explicitly ignored NPC type, so tagging can be limited to
+		// specific monsters even when several types are attacked in the stack.
+		if (isIgnored(name))
+		{
+			return false;
 		}
 
 		// Skip NPCs that are the one we just attacked (sticky, to avoid a flicker), the
@@ -299,41 +341,26 @@ public class MultiTaggerPlugin extends Plugin
 			|| npc.isDead()
 			|| isTagged(npc))
 		{
-			return null;
+			return false;
 		}
 
 		// Skip NPCs beyond the configured distance, so walking away from a monster that
 		// resets clears its highlight promptly (re-evaluated every tick as the player
 		// moves). 0 = no limit.
-		if (isTooFar(npc))
-		{
-			return null;
-		}
-
-		return HighlightedNpc.builder()
-			.npc(npc)
-			.highlightColor(config.highlightColor())
-			.fillColor(config.fillColor())
-			.hull(config.highlightHull())
-			.outline(config.highlightOutline())
-			.tile(config.highlightTile())
-			.name(config.drawNames())
-			.build();
+		return !isTooFar(npc);
 	}
 
 	/**
 	 * Whether an NPC is "tagged" - i.e. shows the {@code *} prefix in the menu, meaning
-	 * it is in combat. We treat an NPC as tagged when it either:
-	 * <ul>
-	 *   <li>has a visible health bar ({@link NPC#getHealthRatio()} != -1) - it is in
-	 *       combat with someone (e.g. hit by a cannon or another player); or</li>
-	 *   <li>is interacting with the local player - it has aggroed and is attacking us,
-	 *       so it carries the "*" even if we have not damaged it yet (no health bar).</li>
-	 * </ul>
+	 * it is in combat. The {@code *} corresponds to the NPC having a health bar, but the
+	 * game only renders <b>6 health bars at once</b>: in a large stack (e.g. barraging
+	 * dust devils) a tagged NPC beyond the 6 reports {@link NPC#getHealthRatio()} == -1
+	 * even though it carries the {@code *}.
 	 *
-	 * We use {@code getInteracting() == localPlayer} rather than {@code != null}: an NPC
-	 * merely targeting <em>us</em> is engaged with us, whereas the broader "interacting
-	 * with anything" check wrongly excluded NPCs before they were actually in combat.
+	 * <p>So we treat an NPC as tagged when it currently has a health bar OR we have ever
+	 * seen it with one since it spawned (it is in {@link #lastKnownHpPercent}, our per-NPC
+	 * HP cache). This catches the health-bar-limited members of a stack, which a raw
+	 * {@code getHealthRatio()} check misses. Entries are pruned on despawn.</p>
 	 */
 	private boolean isTagged(NPC npc)
 	{
@@ -341,7 +368,7 @@ public class MultiTaggerPlugin extends Plugin
 		{
 			return true;
 		}
-		return npc.getInteracting() == client.getLocalPlayer();
+		return lastKnownHpPercent.containsKey(npc.getIndex());
 	}
 
 	/**
@@ -371,6 +398,26 @@ public class MultiTaggerPlugin extends Plugin
 			last = n;
 		}
 		return last;
+	}
+
+	/**
+	 * Whether an NPC name is in the user's ignore list (case-insensitive). The list is
+	 * parsed from the comma-separated config string and cached until that string changes,
+	 * so this is cheap to call per NPC per tick.
+	 */
+	private boolean isIgnored(String name)
+	{
+		String raw = config.ignoredNames();
+		if (!Objects.equals(raw, ignoredRaw))
+		{
+			ignoredRaw = raw;
+			ignoredNames.clear();
+			for (String s : Text.fromCSV(raw == null ? "" : raw))
+			{
+				ignoredNames.add(s.toLowerCase(Locale.ROOT));
+			}
+		}
+		return !ignoredNames.isEmpty() && ignoredNames.contains(name.toLowerCase(Locale.ROOT));
 	}
 
 	/**
