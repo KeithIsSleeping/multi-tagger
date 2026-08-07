@@ -1,0 +1,516 @@
+/*
+ * Copyright (c) 2026, KeithIsSleeping
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright notice, this
+ *    list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright notice,
+ *    this list of conditions and the following disclaimer in the documentation
+ *    and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR
+ * ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+ * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+package com.multitagger;
+
+import com.google.inject.Provides;
+import java.awt.Color;
+import java.util.HashMap;
+import java.util.LinkedHashSet;
+import java.util.Map;
+import java.util.Set;
+import java.util.function.Function;
+import javax.inject.Inject;
+import lombok.extern.slf4j.Slf4j;
+import net.runelite.api.Actor;
+import net.runelite.api.Client;
+import net.runelite.api.GameState;
+import net.runelite.api.Hitsplat;
+import net.runelite.api.MenuAction;
+import net.runelite.api.MenuEntry;
+import net.runelite.api.NPC;
+import net.runelite.api.Player;
+import net.runelite.api.gameval.VarbitID;
+import net.runelite.api.events.GameStateChanged;
+import net.runelite.api.events.GameTick;
+import net.runelite.api.events.HitsplatApplied;
+import net.runelite.api.events.InteractingChanged;
+import net.runelite.api.events.MenuOpened;
+import net.runelite.api.events.NpcDespawned;
+import net.runelite.client.callback.ClientThread;
+import net.runelite.client.config.ConfigManager;
+import net.runelite.client.eventbus.Subscribe;
+import net.runelite.client.game.NPCManager;
+import net.runelite.client.game.npcoverlay.HighlightedNpc;
+import net.runelite.client.game.npcoverlay.NpcOverlayService;
+import net.runelite.client.plugins.Plugin;
+import net.runelite.client.plugins.PluginDescriptor;
+import net.runelite.client.util.ColorUtil;
+
+@Slf4j
+@PluginDescriptor(
+	name = "Multi Tagger",
+	description = "In multi-combat, highlights untagged NPCs of the type you are fighting so you can tag them too",
+	tags = {"npc", "highlight", "multi", "combat", "slayer", "tag"}
+)
+public class MultiTaggerPlugin extends Plugin
+{
+	@Inject
+	private Client client;
+
+	@Inject
+	private MultiTaggerConfig config;
+
+	@Inject
+	private NpcOverlayService npcOverlayService;
+
+	@Inject
+	private ClientThread clientThread;
+
+	@Inject
+	private NPCManager npcManager;
+
+	// Names of NPC types the local player has attacked while in a multi-combat area.
+	// Insertion-ordered so the most-recently attacked type is the last entry.
+	private final Set<String> attackedNames = new LinkedHashSet<>();
+
+	// The NPC the local player most recently attacked. Kept as a sticky reference so a
+	// one-tick getInteracting() dropout (which happens right after clicking to attack,
+	// before combat actually starts) doesn't briefly re-highlight the target.
+	private NPC lastAttacked;
+
+	// Last-known HP percent per NPC (keyed by index), captured while it had a live
+	// health bar. The game only maintains health bars for a handful of NPCs at once,
+	// so for the rest we fall back to this remembered value instead of assuming full HP.
+	private final Map<Integer, Integer> lastKnownHpPercent = new HashMap<>();
+
+	private final Function<NPC, HighlightedNpc> highlighter = this::highlight;
+
+	@Provides
+	MultiTaggerConfig provideConfig(ConfigManager configManager)
+	{
+		return configManager.getConfig(MultiTaggerConfig.class);
+	}
+
+	@Override
+	protected void startUp()
+	{
+		npcOverlayService.registerHighlighter(highlighter);
+	}
+
+	@Override
+	protected void shutDown()
+	{
+		npcOverlayService.unregisterHighlighter(highlighter);
+		attackedNames.clear();
+		lastAttacked = null;
+		lastKnownHpPercent.clear();
+	}
+
+	@Subscribe
+	public void onGameStateChanged(GameStateChanged event)
+	{
+		GameState state = event.getGameState();
+		if (state == GameState.LOGIN_SCREEN || state == GameState.HOPPING)
+		{
+			attackedNames.clear();
+			lastAttacked = null;
+			lastKnownHpPercent.clear();
+		}
+	}
+
+	@Subscribe
+	public void onInteractingChanged(InteractingChanged event)
+	{
+		if (event.getSource() != client.getLocalPlayer() || !inMultiCombat())
+		{
+			return;
+		}
+		if (event.getTarget() instanceof NPC)
+		{
+			lastAttacked = (NPC) event.getTarget();
+		}
+		if (rememberAttacked(event.getTarget()))
+		{
+			npcOverlayService.rebuild();
+		}
+	}
+
+	@Subscribe
+	public void onNpcDespawned(NpcDespawned event)
+	{
+		if (event.getNpc() == lastAttacked)
+		{
+			lastAttacked = null;
+		}
+		// Index may be reused by a future NPC, so drop the remembered HP.
+		lastKnownHpPercent.remove(event.getNpc().getIndex());
+	}
+
+	@Subscribe
+	public void onMenuOpened(MenuOpened event)
+	{
+		if (!config.showMenuHp())
+		{
+			return;
+		}
+
+		for (MenuEntry entry : event.getMenuEntries())
+		{
+			NPC npc = entry.getNpc();
+			if (npc == null || entry.getType() == MenuAction.EXAMINE_NPC)
+			{
+				continue;
+			}
+			String hp = hpText(npc);
+			if (hp != null)
+			{
+				entry.setTarget(entry.getTarget() + " " + hp);
+			}
+		}
+	}
+
+	@Subscribe
+	public void onHitsplatApplied(HitsplatApplied event)
+	{
+		if (!inMultiCombat())
+		{
+			return;
+		}
+		Hitsplat hitsplat = event.getHitsplat();
+		if (hitsplat != null && hitsplat.isMine() && rememberAttacked(event.getActor()))
+		{
+			npcOverlayService.rebuild();
+		}
+	}
+
+	@Subscribe
+	public void onGameTick(GameTick event)
+	{
+		updateHpCache();
+
+		if (config.debugLogging())
+		{
+			logDebug();
+		}
+
+		if (!inMultiCombat())
+		{
+			// Leaving multi-combat drops all tags and clears the highlights.
+			if (!attackedNames.isEmpty())
+			{
+				attackedNames.clear();
+				lastAttacked = null;
+				npcOverlayService.rebuild();
+			}
+			return;
+		}
+
+		// Combat state (health bar) changes over time without spawn events, so refresh
+		// the highlights each tick while there is something to show.
+		if (!attackedNames.isEmpty())
+		{
+			npcOverlayService.rebuild();
+		}
+	}
+
+	private void logDebug()
+	{
+		int varbit = client.getVarbitValue(VarbitID.MULTIWAY_INDICATOR);
+		log.info("[MultiTagger] multiVarbit={} inMulti={} attackedNames={}",
+			varbit, inMultiCombat(), attackedNames);
+		if (client.getLocalPlayer() == null)
+		{
+			return;
+		}
+		for (NPC npc : client.getTopLevelWorldView().npcs())
+		{
+			String name = npc.getName();
+			if (name != null && attackedNames.contains(name))
+			{
+				log.info("[MultiTagger]   {} idx={} interacting={} hp={} dead={} -> highlight={}",
+					name, npc.getIndex(), npc.getInteracting() != null, npc.getHealthRatio(),
+					npc.isDead(), highlight(npc) != null);
+			}
+		}
+	}
+
+	/**
+	 * Record the name of an NPC the local player attacked. Returns true if this added
+	 * a new type (so a rebuild is worthwhile).
+	 */
+	private boolean rememberAttacked(Actor target)
+	{
+		if (!(target instanceof NPC))
+		{
+			return false;
+		}
+		String name = target.getName();
+		if (name == null)
+		{
+			return false;
+		}
+		// Keep the most-recently attacked type as the last inserted entry.
+		attackedNames.remove(name);
+		attackedNames.add(name);
+		return true;
+	}
+
+	private HighlightedNpc highlight(NPC npc)
+	{
+		if (!inMultiCombat() || attackedNames.isEmpty())
+		{
+			return null;
+		}
+
+		String name = npc.getName();
+		if (name == null)
+		{
+			return null;
+		}
+
+		if (config.onlyMostRecent())
+		{
+			if (!name.equals(mostRecentName()))
+			{
+				return null;
+			}
+		}
+		else if (!attackedNames.contains(name))
+		{
+			return null;
+		}
+
+		// Skip NPCs that are the one we just attacked (sticky, to avoid a flicker), the
+		// player's live target, already carry the "*" (in combat / tagged), or are dead.
+		if (npc == lastAttacked
+			|| npc == client.getLocalPlayer().getInteracting()
+			|| npc.isDead()
+			|| isTagged(npc))
+		{
+			return null;
+		}
+
+		// Skip NPCs beyond the configured distance, so walking away from a monster that
+		// resets clears its highlight promptly (re-evaluated every tick as the player
+		// moves). 0 = no limit.
+		if (isTooFar(npc))
+		{
+			return null;
+		}
+
+		return HighlightedNpc.builder()
+			.npc(npc)
+			.highlightColor(config.highlightColor())
+			.fillColor(config.fillColor())
+			.hull(config.highlightHull())
+			.outline(config.highlightOutline())
+			.tile(config.highlightTile())
+			.name(config.drawNames())
+			.build();
+	}
+
+	/**
+	 * Whether an NPC is "tagged" - i.e. shows the {@code *} prefix in the menu, meaning
+	 * it is in combat. We treat an NPC as tagged when it either:
+	 * <ul>
+	 *   <li>has a visible health bar ({@link NPC#getHealthRatio()} != -1) - it is in
+	 *       combat with someone (e.g. hit by a cannon or another player); or</li>
+	 *   <li>is interacting with the local player - it has aggroed and is attacking us,
+	 *       so it carries the "*" even if we have not damaged it yet (no health bar).</li>
+	 * </ul>
+	 *
+	 * We use {@code getInteracting() == localPlayer} rather than {@code != null}: an NPC
+	 * merely targeting <em>us</em> is engaged with us, whereas the broader "interacting
+	 * with anything" check wrongly excluded NPCs before they were actually in combat.
+	 */
+	private boolean isTagged(NPC npc)
+	{
+		if (npc.getHealthRatio() != -1)
+		{
+			return true;
+		}
+		return npc.getInteracting() == client.getLocalPlayer();
+	}
+
+	/**
+	 * True if the NPC is farther than the configured max distance from the local player.
+	 * Used so that walking away from a resetting monster clears its highlight quickly.
+	 */
+	private boolean isTooFar(NPC npc)
+	{
+		int max = config.maxDistance();
+		if (max <= 0)
+		{
+			return false;
+		}
+		Player local = client.getLocalPlayer();
+		if (local == null || local.getWorldLocation() == null || npc.getWorldLocation() == null)
+		{
+			return false;
+		}
+		return npc.getWorldLocation().distanceTo(local.getWorldLocation()) > max;
+	}
+
+	private String mostRecentName()
+	{
+		String last = null;
+		for (String n : attackedNames)
+		{
+			last = n;
+		}
+		return last;
+	}
+
+	/**
+	 * Update the per-NPC last-known HP cache from any NPC that currently has a live
+	 * health bar. The game only maintains health bars for a handful of NPCs at a time,
+	 * so this lets us remember the HP of ones that later lose their bar in a big stack.
+	 */
+	private void updateHpCache()
+	{
+		if (client.getLocalPlayer() == null)
+		{
+			return;
+		}
+		for (NPC npc : client.getTopLevelWorldView().npcs())
+		{
+			int ratio = npc.getHealthRatio();
+			int scale = npc.getHealthScale();
+			if (ratio >= 0 && scale > 0)
+			{
+				lastKnownHpPercent.put(npc.getIndex(), (int) Math.round((double) ratio / scale * 100.0));
+			}
+		}
+	}
+
+	/**
+	 * Build the menu HP suffix for an NPC (e.g. "(45)", "(30%)" or "(45 / 30%)"). Uses
+	 * the live health bar when present; otherwise the last-known value we remembered
+	 * while it had a bar (prefixed with {@code ~}); otherwise assumes full HP (an NPC
+	 * that has never had a health bar is not in combat). Optionally colours it.
+	 */
+	private String hpText(NPC npc)
+	{
+		int ratio = npc.getHealthRatio();
+		int scale = npc.getHealthScale();
+
+		double fraction;
+		int percent;
+		Integer hitpoints;
+		boolean approximate = false;
+		if (ratio >= 0 && scale > 0)
+		{
+			fraction = (double) ratio / scale;
+			percent = (int) Math.round(fraction * 100.0);
+			hitpoints = estimateHitpoints(npc, ratio, scale);
+		}
+		else
+		{
+			Integer cached = lastKnownHpPercent.get(npc.getIndex());
+			Integer maxHealth = npcManager.getHealth(npc.getId());
+			if (cached != null)
+			{
+				// The game dropped this NPC's health bar (stack too large); show the
+				// last value we saw rather than pretending it is full.
+				percent = cached;
+				fraction = cached / 100.0;
+				hitpoints = maxHealth == null ? null : (int) Math.round(fraction * maxHealth);
+				approximate = true;
+			}
+			else
+			{
+				// Never had a health bar => not in combat => full HP.
+				fraction = 1.0;
+				percent = 100;
+				hitpoints = maxHealth;
+			}
+		}
+
+		MenuHpMode mode = config.menuHpMode();
+		String body;
+		if (mode == MenuHpMode.PERCENTAGE || (mode == MenuHpMode.HITPOINTS && hitpoints == null))
+		{
+			body = percent + "%";
+		}
+		else if (mode == MenuHpMode.HITPOINTS)
+		{
+			body = String.valueOf(hitpoints);
+		}
+		else // BOTH
+		{
+			body = (hitpoints != null ? hitpoints + " / " : "") + percent + "%";
+		}
+
+		String text = "(" + (approximate ? "~" : "") + body + ")";
+		if (config.menuHpColor())
+		{
+			text = ColorUtil.wrapWithColorTag(text, hpColor(fraction));
+		}
+		return text;
+	}
+
+	/**
+	 * Estimate an NPC's current hitpoints from its health-bar ratio and known max HP,
+	 * using the server's health-bar formula (as in the Opponent Info plugin). Returns
+	 * null when the max HP is unknown.
+	 */
+	private Integer estimateHitpoints(NPC npc, int ratio, int scale)
+	{
+		Integer maxHealth = npcManager.getHealth(npc.getId());
+		if (maxHealth == null)
+		{
+			return null;
+		}
+		if (ratio == 0)
+		{
+			return 0;
+		}
+
+		int minHealth = 1;
+		int maxHp;
+		if (scale > 1)
+		{
+			if (ratio > 1)
+			{
+				minHealth = (maxHealth * (ratio - 1) + scale - 2) / (scale - 1);
+			}
+			maxHp = (maxHealth * ratio - 1) / (scale - 1);
+			if (maxHp > maxHealth)
+			{
+				maxHp = maxHealth;
+			}
+		}
+		else
+		{
+			maxHp = maxHealth;
+		}
+		return (minHealth + maxHp + 1) / 2;
+	}
+
+	private static Color hpColor(double fraction)
+	{
+		fraction = Math.max(0.0, Math.min(1.0, fraction));
+		// Interpolate red (0%) -> yellow (50%) -> green (100%).
+		int r = fraction < 0.5 ? 255 : (int) Math.round(255 * (1 - fraction) * 2);
+		int g = fraction > 0.5 ? 255 : (int) Math.round(255 * fraction * 2);
+		return new Color(r, g, 0);
+	}
+
+	private boolean inMultiCombat()
+	{
+		Player local = client.getLocalPlayer();
+		return local != null && client.getVarbitValue(VarbitID.MULTIWAY_INDICATOR) != 0;
+	}
+}
