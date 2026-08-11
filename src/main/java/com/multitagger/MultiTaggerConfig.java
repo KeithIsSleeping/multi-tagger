@@ -29,6 +29,7 @@ import net.runelite.client.config.Alpha;
 import net.runelite.client.config.Config;
 import net.runelite.client.config.ConfigGroup;
 import net.runelite.client.config.ConfigItem;
+import net.runelite.client.config.Range;
 
 @ConfigGroup(MultiTaggerConfig.GROUP)
 public interface MultiTaggerConfig extends Config
@@ -136,8 +137,20 @@ public interface MultiTaggerConfig extends Config
 		return 12;
 	}
 
+	@Range(min = 0, max = 20)
 	@ConfigItem(
 		position = 9,
+		keyName = "tagGraceTicks",
+		name = "Tag grace (ticks)",
+		description = "How long an NPC stays treated as tagged after its health bar disappears. Bridges the brief dropouts caused by the game only drawing 6 health bars at once. Keep low so monsters that reset (drop aggro) are re-highlighted quickly."
+	)
+	default int tagGraceTicks()
+	{
+		return 3;
+	}
+
+	@ConfigItem(
+		position = 10,
 		keyName = "showMenuHp",
 		name = "Show HP in menu",
 		description = "Appends each NPC's current HP to its name in the right-click menu, so you can tell stacked monsters apart."
@@ -148,7 +161,7 @@ public interface MultiTaggerConfig extends Config
 	}
 
 	@ConfigItem(
-		position = 10,
+		position = 11,
 		keyName = "menuHpMode",
 		name = "Menu HP format",
 		description = "Whether the menu HP is shown as estimated hitpoints, a percentage, or both."
@@ -159,7 +172,7 @@ public interface MultiTaggerConfig extends Config
 	}
 
 	@ConfigItem(
-		position = 11,
+		position = 12,
 		keyName = "menuHpColor",
 		name = "Colour menu HP",
 		description = "Colour the menu HP from green (full) to red (low) so low-HP monsters stand out."
@@ -170,7 +183,7 @@ public interface MultiTaggerConfig extends Config
 	}
 
 	@ConfigItem(
-		position = 12,
+		position = 13,
 		keyName = "debugLogging",
 		name = "Debug logging",
 		description = "Logs multi-combat state and per-NPC combat state to help diagnose why NPCs are or aren't highlighted. Leave off for normal play."

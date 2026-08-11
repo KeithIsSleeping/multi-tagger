@@ -86,15 +86,25 @@ public class MultiTaggerPlugin extends Plugin
 	// Insertion-ordered so the most-recently attacked type is the last entry.
 	private final Set<String> attackedNames = new LinkedHashSet<>();
 
-	// The NPC the local player most recently attacked. Kept as a sticky reference so a
-	// one-tick getInteracting() dropout (which happens right after clicking to attack,
-	// before combat actually starts) doesn't briefly re-highlight the target.
+	// The NPC the local player most recently attacked, plus the tick it was recorded.
+	// Kept as a sticky reference so a one-tick getInteracting() dropout (right after
+	// clicking to attack, before combat actually starts) doesn't briefly re-highlight the
+	// target. Time-bounded so a monster that later resets can be re-highlighted.
 	private NPC lastAttacked;
+	private int lastAttackedTick = -1;
 
 	// Last-known HP percent per NPC (keyed by index), captured while it had a live
 	// health bar. The game only maintains health bars for a handful of NPCs at once,
 	// so for the rest we fall back to this remembered value instead of assuming full HP.
+	// NOTE: display only - do NOT use this to decide "tagged" (it never expires while the
+	// NPC is spawned, which would keep a reset monster permanently un-highlighted).
 	private final Map<Integer, Integer> lastKnownHpPercent = new HashMap<>();
+
+	// Tick at which we last saw EVIDENCE an NPC (by index) was tagged: it had a health
+	// bar, was interacting with us, or we damaged it. Used with a short grace period so
+	// brief health-bar dropouts (the game renders only 6 bars at once) don't un-tag a
+	// stack member, while a monster that truly resets goes untagged almost immediately.
+	private final Map<Integer, Integer> lastTaggedTick = new HashMap<>();
 
 	// NPCs to highlight this tick. Recomputed each game tick and rendered by our own
 	// overlay (not the shared NpcOverlayService, which would let another plugin's
@@ -129,7 +139,9 @@ public class MultiTaggerPlugin extends Plugin
 		overlayManager.remove(overlay);
 		attackedNames.clear();
 		lastAttacked = null;
+		lastAttackedTick = -1;
 		lastKnownHpPercent.clear();
+		lastTaggedTick.clear();
 		highlightedNpcs.clear();
 	}
 
@@ -141,7 +153,9 @@ public class MultiTaggerPlugin extends Plugin
 		{
 			attackedNames.clear();
 			lastAttacked = null;
+			lastAttackedTick = -1;
 			lastKnownHpPercent.clear();
+			lastTaggedTick.clear();
 			highlightedNpcs.clear();
 		}
 	}
@@ -156,6 +170,7 @@ public class MultiTaggerPlugin extends Plugin
 		if (event.getTarget() instanceof NPC)
 		{
 			lastAttacked = (NPC) event.getTarget();
+			lastAttackedTick = client.getTickCount();
 		}
 		if (rememberAttacked(event.getTarget()))
 		{
@@ -171,8 +186,9 @@ public class MultiTaggerPlugin extends Plugin
 			lastAttacked = null;
 		}
 		highlightedNpcs.remove(event.getNpc());
-		// Index may be reused by a future NPC, so drop the remembered HP.
+		// Index may be reused by a future NPC, so drop the remembered state.
 		lastKnownHpPercent.remove(event.getNpc().getIndex());
+		lastTaggedTick.remove(event.getNpc().getIndex());
 	}
 
 	@Subscribe
@@ -206,9 +222,17 @@ public class MultiTaggerPlugin extends Plugin
 			return;
 		}
 		Hitsplat hitsplat = event.getHitsplat();
-		if (hitsplat != null && hitsplat.isMine() && rememberAttacked(event.getActor()))
+		if (hitsplat != null && hitsplat.isMine())
 		{
-			recomputeHighlights();
+			// We damaged it, so it is definitely tagged right now.
+			if (event.getActor() instanceof NPC)
+			{
+				lastTaggedTick.put(((NPC) event.getActor()).getIndex(), client.getTickCount());
+			}
+			if (rememberAttacked(event.getActor()))
+			{
+				recomputeHighlights();
+			}
 		}
 	}
 
@@ -334,9 +358,14 @@ public class MultiTaggerPlugin extends Plugin
 			return false;
 		}
 
-		// Skip NPCs that are the one we just attacked (sticky, to avoid a flicker), the
-		// player's live target, already carry the "*" (in combat / tagged), or are dead.
-		if (npc == lastAttacked
+		// Skip the NPC we are currently attacking, and (briefly) the one we just clicked -
+		// the sticky lastAttacked reference avoids a flicker in the tick before combat
+		// registers. It is time-bounded so that if that same monster later resets, it
+		// becomes highlightable again instead of being excluded forever.
+		boolean justClicked = npc == lastAttacked
+			&& lastAttackedTick >= 0
+			&& (client.getTickCount() - lastAttackedTick) <= config.tagGraceTicks();
+		if (justClicked
 			|| npc == client.getLocalPlayer().getInteracting()
 			|| npc.isDead()
 			|| isTagged(npc))
@@ -352,23 +381,22 @@ public class MultiTaggerPlugin extends Plugin
 
 	/**
 	 * Whether an NPC is "tagged" - i.e. shows the {@code *} prefix in the menu, meaning it
-	 * is in combat. An NPC carries the {@code *} in three cases, so we treat it as tagged
-	 * when ANY hold:
+	 * is in combat. Treated as tagged when ANY of these hold:
 	 * <ol>
 	 *   <li>it currently has a visible health bar ({@link NPC#getHealthRatio()} != -1); or</li>
-	 *   <li>we have seen it with a health bar since it spawned (it is in our per-NPC HP
-	 *       cache {@link #lastKnownHpPercent}). The game only renders <b>6 health bars at
-	 *       once</b>, so a tagged NPC beyond the 6 in a large stack (e.g. barraging dust
-	 *       devils) reports {@code getHealthRatio() == -1} even though it keeps the {@code *};
-	 *       the cache catches those; or</li>
-	 *   <li>it is interacting with the local player. An aggressive NPC that has aggroed and
-	 *       is attacking us carries the {@code *} the moment it targets us, before we have
-	 *       damaged it - so it has no health bar and isn't cached yet. Without this it would
-	 *       stay highlighted while attacking us.</li>
+	 *   <li>it is interacting with the local player - an aggressive NPC carries the
+	 *       {@code *} the moment it targets us, before we have damaged it (no health bar
+	 *       yet); or</li>
+	 *   <li>we saw either of the above (or landed a hit on it) within the last
+	 *       {@link MultiTaggerConfig#tagGraceTicks()} ticks. The game renders only <b>6
+	 *       health bars at once</b>, so a tagged NPC in a big stack can briefly report
+	 *       {@code getHealthRatio() == -1}; the grace period bridges that flicker.</li>
 	 * </ol>
 	 *
-	 * <p>We use {@code getInteracting() == localPlayer} (not {@code != null}): an NPC merely
-	 * interacting with something else is not necessarily engaged with us.</p>
+	 * <p>The grace period is deliberately SHORT and time-bounded rather than a permanent
+	 * "has ever had a health bar" cache: when a monster drops aggro it resets, loses the
+	 * {@code *} and walks back to its spawn, and must become highlightable again straight
+	 * away so the player can re-tag it.</p>
 	 */
 	private boolean isTagged(NPC npc)
 	{
@@ -376,11 +404,12 @@ public class MultiTaggerPlugin extends Plugin
 		{
 			return true;
 		}
-		if (lastKnownHpPercent.containsKey(npc.getIndex()))
+		if (npc.getInteracting() == client.getLocalPlayer())
 		{
 			return true;
 		}
-		return npc.getInteracting() == client.getLocalPlayer();
+		Integer last = lastTaggedTick.get(npc.getIndex());
+		return last != null && (client.getTickCount() - last) <= config.tagGraceTicks();
 	}
 
 	/**
@@ -433,16 +462,23 @@ public class MultiTaggerPlugin extends Plugin
 	}
 
 	/**
-	 * Update the per-NPC last-known HP cache from any NPC that currently has a live
-	 * health bar. The game only maintains health bars for a handful of NPCs at a time,
-	 * so this lets us remember the HP of ones that later lose their bar in a big stack.
+	 * Per-tick bookkeeping over the loaded NPCs:
+	 * <ul>
+	 *   <li>remember the HP of any NPC that currently has a health bar, so the menu can
+	 *       still show a value for stack members whose bar the game later drops; and</li>
+	 *   <li>record the tick at which we last saw evidence an NPC is tagged (health bar or
+	 *       interacting with us), which {@link #isTagged(NPC)} uses with a short grace
+	 *       period.</li>
+	 * </ul>
 	 */
 	private void updateHpCache()
 	{
-		if (client.getLocalPlayer() == null)
+		Player local = client.getLocalPlayer();
+		if (local == null)
 		{
 			return;
 		}
+		int tick = client.getTickCount();
 		for (NPC npc : client.getTopLevelWorldView().npcs())
 		{
 			int ratio = npc.getHealthRatio();
@@ -450,6 +486,11 @@ public class MultiTaggerPlugin extends Plugin
 			if (ratio >= 0 && scale > 0)
 			{
 				lastKnownHpPercent.put(npc.getIndex(), (int) Math.round((double) ratio / scale * 100.0));
+				lastTaggedTick.put(npc.getIndex(), tick);
+			}
+			else if (npc.getInteracting() == local)
+			{
+				lastTaggedTick.put(npc.getIndex(), tick);
 			}
 		}
 	}
