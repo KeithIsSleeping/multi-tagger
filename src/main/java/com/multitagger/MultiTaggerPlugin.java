@@ -25,7 +25,6 @@
 package com.multitagger;
 
 import com.google.inject.Provides;
-import java.awt.Color;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
@@ -39,8 +38,6 @@ import net.runelite.api.Actor;
 import net.runelite.api.Client;
 import net.runelite.api.GameState;
 import net.runelite.api.Hitsplat;
-import net.runelite.api.MenuAction;
-import net.runelite.api.MenuEntry;
 import net.runelite.api.NPC;
 import net.runelite.api.Player;
 import net.runelite.api.gameval.VarbitID;
@@ -48,15 +45,12 @@ import net.runelite.api.events.GameStateChanged;
 import net.runelite.api.events.GameTick;
 import net.runelite.api.events.HitsplatApplied;
 import net.runelite.api.events.InteractingChanged;
-import net.runelite.api.events.MenuOpened;
 import net.runelite.api.events.NpcDespawned;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
-import net.runelite.client.game.NPCManager;
 import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginDescriptor;
 import net.runelite.client.ui.overlay.OverlayManager;
-import net.runelite.client.util.ColorUtil;
 import net.runelite.client.util.Text;
 
 @Slf4j
@@ -79,9 +73,6 @@ public class MultiTaggerPlugin extends Plugin
 	@Inject
 	private MultiTaggerOverlay overlay;
 
-	@Inject
-	private NPCManager npcManager;
-
 	// Names of NPC types the local player has attacked while in a multi-combat area.
 	// Insertion-ordered so the most-recently attacked type is the last entry.
 	private final Set<String> attackedNames = new LinkedHashSet<>();
@@ -92,13 +83,6 @@ public class MultiTaggerPlugin extends Plugin
 	// target. Time-bounded so a monster that later resets can be re-highlighted.
 	private NPC lastAttacked;
 	private int lastAttackedTick = -1;
-
-	// Last-known HP percent per NPC (keyed by index), captured while it had a live
-	// health bar. The game only maintains health bars for a handful of NPCs at once,
-	// so for the rest we fall back to this remembered value instead of assuming full HP.
-	// NOTE: display only - do NOT use this to decide "tagged" (it never expires while the
-	// NPC is spawned, which would keep a reset monster permanently un-highlighted).
-	private final Map<Integer, Integer> lastKnownHpPercent = new HashMap<>();
 
 	// Tick at which we last saw EVIDENCE an NPC (by index) was tagged: it had a health
 	// bar, was interacting with us, or we damaged it. Used with a short grace period so
@@ -140,7 +124,6 @@ public class MultiTaggerPlugin extends Plugin
 		attackedNames.clear();
 		lastAttacked = null;
 		lastAttackedTick = -1;
-		lastKnownHpPercent.clear();
 		lastTaggedTick.clear();
 		highlightedNpcs.clear();
 	}
@@ -154,7 +137,6 @@ public class MultiTaggerPlugin extends Plugin
 			attackedNames.clear();
 			lastAttacked = null;
 			lastAttackedTick = -1;
-			lastKnownHpPercent.clear();
 			lastTaggedTick.clear();
 			highlightedNpcs.clear();
 		}
@@ -187,31 +169,7 @@ public class MultiTaggerPlugin extends Plugin
 		}
 		highlightedNpcs.remove(event.getNpc());
 		// Index may be reused by a future NPC, so drop the remembered state.
-		lastKnownHpPercent.remove(event.getNpc().getIndex());
 		lastTaggedTick.remove(event.getNpc().getIndex());
-	}
-
-	@Subscribe
-	public void onMenuOpened(MenuOpened event)
-	{
-		if (!config.showMenuHp())
-		{
-			return;
-		}
-
-		for (MenuEntry entry : event.getMenuEntries())
-		{
-			NPC npc = entry.getNpc();
-			if (npc == null || entry.getType() == MenuAction.EXAMINE_NPC)
-			{
-				continue;
-			}
-			String hp = hpText(npc);
-			if (hp != null)
-			{
-				entry.setTarget(entry.getTarget() + " " + hp);
-			}
-		}
 	}
 
 	@Subscribe
@@ -239,7 +197,7 @@ public class MultiTaggerPlugin extends Plugin
 	@Subscribe
 	public void onGameTick(GameTick event)
 	{
-		updateHpCache();
+		updateTaggedState();
 
 		if (config.debugLogging())
 		{
@@ -462,16 +420,11 @@ public class MultiTaggerPlugin extends Plugin
 	}
 
 	/**
-	 * Per-tick bookkeeping over the loaded NPCs:
-	 * <ul>
-	 *   <li>remember the HP of any NPC that currently has a health bar, so the menu can
-	 *       still show a value for stack members whose bar the game later drops; and</li>
-	 *   <li>record the tick at which we last saw evidence an NPC is tagged (health bar or
-	 *       interacting with us), which {@link #isTagged(NPC)} uses with a short grace
-	 *       period.</li>
-	 * </ul>
+	 * Per-tick bookkeeping: record the tick at which we last saw evidence an NPC is tagged
+	 * (it has a health bar, or is interacting with us), which {@link #isTagged(NPC)} uses
+	 * with a short grace period.
 	 */
-	private void updateHpCache()
+	private void updateTaggedState()
 	{
 		Player local = client.getLocalPlayer();
 		if (local == null)
@@ -481,131 +434,11 @@ public class MultiTaggerPlugin extends Plugin
 		int tick = client.getTickCount();
 		for (NPC npc : client.getTopLevelWorldView().npcs())
 		{
-			int ratio = npc.getHealthRatio();
-			int scale = npc.getHealthScale();
-			if (ratio >= 0 && scale > 0)
-			{
-				lastKnownHpPercent.put(npc.getIndex(), (int) Math.round((double) ratio / scale * 100.0));
-				lastTaggedTick.put(npc.getIndex(), tick);
-			}
-			else if (npc.getInteracting() == local)
+			if (npc.getHealthRatio() != -1 || npc.getInteracting() == local)
 			{
 				lastTaggedTick.put(npc.getIndex(), tick);
 			}
 		}
-	}
-
-	/**
-	 * Build the menu HP suffix for an NPC (e.g. "(45)", "(30%)" or "(45 / 30%)"). Uses
-	 * the live health bar when present; otherwise the last-known value we remembered
-	 * while it had a bar (prefixed with {@code ~}); otherwise assumes full HP (an NPC
-	 * that has never had a health bar is not in combat). Optionally colours it.
-	 */
-	private String hpText(NPC npc)
-	{
-		int ratio = npc.getHealthRatio();
-		int scale = npc.getHealthScale();
-
-		double fraction;
-		int percent;
-		Integer hitpoints;
-		boolean approximate = false;
-		if (ratio >= 0 && scale > 0)
-		{
-			fraction = (double) ratio / scale;
-			percent = (int) Math.round(fraction * 100.0);
-			hitpoints = estimateHitpoints(npc, ratio, scale);
-		}
-		else
-		{
-			Integer cached = lastKnownHpPercent.get(npc.getIndex());
-			Integer maxHealth = npcManager.getHealth(npc.getId());
-			if (cached != null)
-			{
-				// The game dropped this NPC's health bar (stack too large); show the
-				// last value we saw rather than pretending it is full.
-				percent = cached;
-				fraction = cached / 100.0;
-				hitpoints = maxHealth == null ? null : (int) Math.round(fraction * maxHealth);
-				approximate = true;
-			}
-			else
-			{
-				// Never had a health bar => not in combat => full HP.
-				fraction = 1.0;
-				percent = 100;
-				hitpoints = maxHealth;
-			}
-		}
-
-		MenuHpMode mode = config.menuHpMode();
-		String body;
-		if (mode == MenuHpMode.PERCENTAGE || (mode == MenuHpMode.HITPOINTS && hitpoints == null))
-		{
-			body = percent + "%";
-		}
-		else if (mode == MenuHpMode.HITPOINTS)
-		{
-			body = String.valueOf(hitpoints);
-		}
-		else // BOTH
-		{
-			body = (hitpoints != null ? hitpoints + " / " : "") + percent + "%";
-		}
-
-		String text = "(" + (approximate ? "~" : "") + body + ")";
-		if (config.menuHpColor())
-		{
-			text = ColorUtil.wrapWithColorTag(text, hpColor(fraction));
-		}
-		return text;
-	}
-
-	/**
-	 * Estimate an NPC's current hitpoints from its health-bar ratio and known max HP,
-	 * using the server's health-bar formula (as in the Opponent Info plugin). Returns
-	 * null when the max HP is unknown.
-	 */
-	private Integer estimateHitpoints(NPC npc, int ratio, int scale)
-	{
-		Integer maxHealth = npcManager.getHealth(npc.getId());
-		if (maxHealth == null)
-		{
-			return null;
-		}
-		if (ratio == 0)
-		{
-			return 0;
-		}
-
-		int minHealth = 1;
-		int maxHp;
-		if (scale > 1)
-		{
-			if (ratio > 1)
-			{
-				minHealth = (maxHealth * (ratio - 1) + scale - 2) / (scale - 1);
-			}
-			maxHp = (maxHealth * ratio - 1) / (scale - 1);
-			if (maxHp > maxHealth)
-			{
-				maxHp = maxHealth;
-			}
-		}
-		else
-		{
-			maxHp = maxHealth;
-		}
-		return (minHealth + maxHp + 1) / 2;
-	}
-
-	private static Color hpColor(double fraction)
-	{
-		fraction = Math.max(0.0, Math.min(1.0, fraction));
-		// Interpolate red (0%) -> yellow (50%) -> green (100%).
-		int r = fraction < 0.5 ? 255 : (int) Math.round(255 * (1 - fraction) * 2);
-		int g = fraction > 0.5 ? 255 : (int) Math.round(255 * fraction * 2);
-		return new Color(r, g, 0);
 	}
 
 	private boolean inMultiCombat()

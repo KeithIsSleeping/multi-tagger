@@ -15,19 +15,25 @@ are skipped, so only the ones that still need tagging light up.
 
 ## Features
 
-- **Highlights untagged same-type NPCs** while you are in a multi-combat area, using
-  a shared highlighter (hull, outline, tile, and/or name) with configurable colours.
+- **Highlights untagged same-type NPCs** while you are in a multi-combat area (hull,
+  outline, tile, and/or name) with configurable colours.
+- **Draws its own overlay**, so its highlight is never suppressed by another NPC
+  highlighter (e.g. NPC Indicators) that happens to target the same monster.
+- **Re-highlights monsters that reset.** When a monster drops aggro it loses its `*`
+  and walks back to spawn; it becomes highlightable again straight away so you can
+  re-tag it.
+- **Handles big stacks.** The game only draws 6 health bars at once, so a tagged NPC
+  in a large stack can briefly look untagged. A short, configurable grace period
+  bridges that flicker without delaying genuine resets.
 - **Clears promptly when you walk away.** A configurable max distance means monsters
-  that reset as you move out of their aggro range stop being highlighted within a tick,
-  instead of staying yellow.
+  outside that range stop being highlighted within a tick.
 - **Only-most-recent mode.** Optionally highlight only the single most recently
   attacked type instead of every type you have attacked.
-- **HP in the right-click menu.** Optionally appends each NPC's current HP to its menu
-  entry so you can tell stacked monsters apart, shown as estimated hitpoints, a
-  percentage, or both, and optionally colour-coded from green (full) to red (low).
-  Because the game only keeps health bars for a handful of NPCs at once, the plugin
-  remembers the last-seen HP of monsters in a large stack (shown with a `~`) rather
-  than assuming they are at full health.
+- **Ignore list.** Comma-separated NPC names to never highlight, so tagging can be
+  limited to specific monsters.
+
+> Looking for monster HP in the right-click menu? Use the
+> [Monster Menu HP](https://runelite.net/plugin-hub/show/menuhp) plugin.
 
 ## Configuration
 
@@ -37,10 +43,9 @@ are skipped, so only the ones that still need tagging light up.
 | Highlight hull / outline / tile | Which highlight styles to draw. |
 | Draw names | Draw the NPC name above untagged NPCs. |
 | Only most-recent type | Highlight only the most recently attacked type. |
+| Ignored NPCs | Comma-separated names to never highlight. |
 | Max distance (tiles) | Only highlight NPCs within this many tiles (0 = no limit). |
-| Show HP in menu | Append each NPC's HP to its right-click menu entry. |
-| Menu HP format | Hitpoints, percentage, or both. |
-| Colour menu HP | Colour the menu HP from green (full) to red (low). |
+| Tag grace (ticks) | How long an NPC stays treated as tagged after its health bar disappears. |
 | Debug logging | Log multi-combat / per-NPC state for troubleshooting. |
 
 ## License

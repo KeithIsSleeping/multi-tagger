@@ -150,39 +150,6 @@ public interface MultiTaggerConfig extends Config
 	}
 
 	@ConfigItem(
-		position = 10,
-		keyName = "showMenuHp",
-		name = "Show HP in menu",
-		description = "Appends each NPC's current HP to its name in the right-click menu, so you can tell stacked monsters apart."
-	)
-	default boolean showMenuHp()
-	{
-		return false;
-	}
-
-	@ConfigItem(
-		position = 11,
-		keyName = "menuHpMode",
-		name = "Menu HP format",
-		description = "Whether the menu HP is shown as estimated hitpoints, a percentage, or both."
-	)
-	default MenuHpMode menuHpMode()
-	{
-		return MenuHpMode.PERCENTAGE;
-	}
-
-	@ConfigItem(
-		position = 12,
-		keyName = "menuHpColor",
-		name = "Colour menu HP",
-		description = "Colour the menu HP from green (full) to red (low) so low-HP monsters stand out."
-	)
-	default boolean menuHpColor()
-	{
-		return true;
-	}
-
-	@ConfigItem(
 		position = 13,
 		keyName = "debugLogging",
 		name = "Debug logging",
