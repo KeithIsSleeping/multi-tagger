@@ -150,12 +150,12 @@ public interface MultiTaggerConfig extends Config
 	}
 
 	@ConfigItem(
-		position = 13,
-		keyName = "debugLogging",
-		name = "Debug logging",
-		description = "Logs multi-combat state and per-NPC combat state to help diagnose why NPCs are or aren't highlighted. Leave off for normal play."
+		position = 10,
+		keyName = "prioritizeUntagged",
+		name = "Left-click untagged first",
+		description = "When an untagged (highlighted) NPC and a tagged one are stacked under the cursor, make the untagged one the left-click target so you can tag it without right-clicking."
 	)
-	default boolean debugLogging()
+	default boolean prioritizeUntagged()
 	{
 		return false;
 	}

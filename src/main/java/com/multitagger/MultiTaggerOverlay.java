@@ -56,6 +56,10 @@ class MultiTaggerOverlay extends Overlay
 	private final MultiTaggerConfig config;
 	private final ModelOutlineRenderer modelOutlineRenderer;
 
+	// Shared, since render() runs every frame for every highlighted NPC.
+	private static final BasicStroke STROKE = new BasicStroke(2f);
+	private static final int OUTLINE_WIDTH = 2;
+
 	@Inject
 	private MultiTaggerOverlay(MultiTaggerPlugin plugin, MultiTaggerConfig config,
 		ModelOutlineRenderer modelOutlineRenderer)
@@ -72,7 +76,6 @@ class MultiTaggerOverlay extends Overlay
 	{
 		final Color border = config.highlightColor();
 		final Color fill = config.fillColor();
-		final float width = 2f;
 
 		for (NPC npc : plugin.getHighlightedNpcs())
 		{
@@ -84,17 +87,17 @@ class MultiTaggerOverlay extends Overlay
 
 			if (config.highlightHull())
 			{
-				renderPoly(graphics, border, width, fill, npc.getConvexHull());
+				renderPoly(graphics, border, fill, npc.getConvexHull());
 			}
 
 			if (config.highlightTile())
 			{
-				renderPoly(graphics, border, width, fill, npc.getCanvasTilePoly());
+				renderPoly(graphics, border, fill, npc.getCanvasTilePoly());
 			}
 
 			if (config.highlightOutline())
 			{
-				modelOutlineRenderer.drawOutline(npc, (int) width, border, 0);
+				modelOutlineRenderer.drawOutline(npc, OUTLINE_WIDTH, border, 0);
 			}
 
 			if (config.drawNames() && npc.getName() != null)
@@ -111,12 +114,12 @@ class MultiTaggerOverlay extends Overlay
 		return null;
 	}
 
-	private void renderPoly(Graphics2D graphics, Color border, float width, Color fill, Shape poly)
+	private void renderPoly(Graphics2D graphics, Color border, Color fill, Shape poly)
 	{
 		if (poly != null)
 		{
 			graphics.setColor(border);
-			graphics.setStroke(new BasicStroke(width));
+			graphics.setStroke(STROKE);
 			graphics.draw(poly);
 			graphics.setColor(fill);
 			graphics.fill(poly);

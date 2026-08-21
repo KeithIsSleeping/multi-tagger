@@ -31,6 +31,10 @@ are skipped, so only the ones that still need tagging light up.
   attacked type instead of every type you have attacked.
 - **Ignore list.** Comma-separated NPC names to never highlight, so tagging can be
   limited to specific monsters.
+- **Left-click the untagged one.** Optionally make an untagged NPC the left-click
+  target when it is stacked under the cursor with a tagged one, so you can tag out a
+  pile without right-clicking. Only ever reorders identical options (an "Attack"
+  ahead of another "Attack"), so it cannot steal a click from an item or object.
 
 > Looking for monster HP in the right-click menu? Use the
 > [Monster Menu HP](https://runelite.net/plugin-hub/show/menuhp) plugin.
@@ -46,7 +50,7 @@ are skipped, so only the ones that still need tagging light up.
 | Ignored NPCs | Comma-separated names to never highlight. |
 | Max distance (tiles) | Only highlight NPCs within this many tiles (0 = no limit). |
 | Tag grace (ticks) | How long an NPC stays treated as tagged after its health bar disappears. |
-| Debug logging | Log multi-combat / per-NPC state for troubleshooting. |
+| Left-click untagged first | When an untagged and a tagged NPC are stacked, make the untagged one the left-click target. |
 
 ## License
 

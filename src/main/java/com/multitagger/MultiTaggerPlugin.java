@@ -33,11 +33,12 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import javax.inject.Inject;
-import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.Actor;
 import net.runelite.api.Client;
 import net.runelite.api.GameState;
 import net.runelite.api.Hitsplat;
+import net.runelite.api.Menu;
+import net.runelite.api.MenuEntry;
 import net.runelite.api.NPC;
 import net.runelite.api.Player;
 import net.runelite.api.gameval.VarbitID;
@@ -46,6 +47,7 @@ import net.runelite.api.events.GameTick;
 import net.runelite.api.events.HitsplatApplied;
 import net.runelite.api.events.InteractingChanged;
 import net.runelite.api.events.NpcDespawned;
+import net.runelite.api.events.PostMenuSort;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.plugins.Plugin;
@@ -53,7 +55,6 @@ import net.runelite.client.plugins.PluginDescriptor;
 import net.runelite.client.ui.overlay.OverlayManager;
 import net.runelite.client.util.Text;
 
-@Slf4j
 @PluginDescriptor(
 	name = "Multi Tagger",
 	description = "In multi-combat, highlights untagged NPCs of the type you are fighting so you can tag them too",
@@ -199,11 +200,6 @@ public class MultiTaggerPlugin extends Plugin
 	{
 		updateTaggedState();
 
-		if (config.debugLogging())
-		{
-			logDebug();
-		}
-
 		if (!inMultiCombat())
 		{
 			// Leaving multi-combat drops all tags and clears the highlights.
@@ -242,26 +238,7 @@ public class MultiTaggerPlugin extends Plugin
 		}
 	}
 
-	private void logDebug()
-	{
-		int varbit = client.getVarbitValue(VarbitID.MULTIWAY_INDICATOR);
-		log.info("[MultiTagger] multiVarbit={} inMulti={} attackedNames={}",
-			varbit, inMultiCombat(), attackedNames);
-		if (client.getLocalPlayer() == null)
-		{
-			return;
-		}
-		for (NPC npc : client.getTopLevelWorldView().npcs())
-		{
-			String name = npc.getName();
-			if (name != null && attackedNames.contains(name))
-			{
-				log.info("[MultiTagger]   {} idx={} interacting={} hp={} dead={} -> highlight={}",
-					name, npc.getIndex(), npc.getInteracting() != null, npc.getHealthRatio(),
-						npc.isDead(), shouldHighlight(npc));
-			}
-		}
-	}
+
 
 	/**
 	 * Record the name of an NPC the local player attacked. Returns true if this added
@@ -445,5 +422,61 @@ public class MultiTaggerPlugin extends Plugin
 	{
 		Player local = client.getLocalPlayer();
 		return local != null && client.getVarbitValue(VarbitID.MULTIWAY_INDICATOR) != 0;
+	}
+
+	/**
+	 * Make an untagged (highlighted) NPC the left-click target when it is stacked under the
+	 * cursor with a tagged one, so a stack can be tagged out without right-clicking.
+	 *
+	 * <p>Only like-for-like entries are reordered: the swap happens solely when the current
+	 * left-click entry is an NPC entry whose option matches an untagged NPC's entry below
+	 * it (both "Attack", for example). That way this can never steal a click from an item,
+	 * an object, or a different action - it only breaks the tie the game resolves by
+	 * proximity, which is exactly the case the highlight exists to flag.</p>
+	 */
+	@Subscribe
+	public void onPostMenuSort(PostMenuSort event)
+	{
+		// The menu is not rebuilt while it is open, so reordering then would swap
+		// repeatedly, moving entries under the player's cursor as they read them.
+		if (!config.prioritizeUntagged() || client.isMenuOpen() || highlightedNpcs.isEmpty())
+		{
+			return;
+		}
+
+		Menu menu = client.getMenu();
+		MenuEntry[] entries = menu.getMenuEntries();
+		if (entries.length < 2)
+		{
+			return;
+		}
+
+		// The last entry is the top of the menu, i.e. what a left click activates.
+		final int top = entries.length - 1;
+		MenuEntry leftClick = entries[top];
+		NPC current = leftClick.getNpc();
+		if (current == null || highlightedNpcs.contains(current))
+		{
+			// Not an NPC, or the left click already targets an untagged one.
+			return;
+		}
+
+		for (int i = top - 1; i >= 0; i--)
+		{
+			MenuEntry candidate = entries[i];
+			NPC npc = candidate.getNpc();
+			if (npc == null
+				|| candidate.isDeprioritized()
+				|| !highlightedNpcs.contains(npc)
+				|| !Objects.equals(candidate.getOption(), leftClick.getOption()))
+			{
+				continue;
+			}
+
+			entries[i] = leftClick;
+			entries[top] = candidate;
+			menu.setMenuEntries(entries);
+			return;
+		}
 	}
 }
