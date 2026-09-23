@@ -24,6 +24,7 @@
  */
 package com.multitagger;
 
+import com.google.common.collect.ImmutableSet;
 import com.google.inject.Provides;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -40,6 +41,7 @@ import net.runelite.api.Hitsplat;
 import net.runelite.api.Menu;
 import net.runelite.api.MenuEntry;
 import net.runelite.api.NPC;
+import net.runelite.api.NPCComposition;
 import net.runelite.api.Player;
 import net.runelite.api.gameval.VarbitID;
 import net.runelite.api.events.GameStateChanged;
@@ -62,6 +64,52 @@ import net.runelite.client.util.Text;
 )
 public class MultiTaggerPlugin extends Plugin
 {
+	private static final String ATTACK_ACTION = "Attack";
+
+	/**
+	 * NPCs that belong to a boss encounter, lowercased.
+	 *
+	 * <p>Kept as NAMES rather than ids because the plugin matches on name throughout, and
+	 * one name covers every id a boss transforms through - phases, enrage forms and
+	 * instanced copies all share it, where an id list would need each one.</p>
+	 *
+	 * <p>Minions are included where they are part of the encounter, since highlighting them
+	 * mid-fight is the same problem as highlighting the boss.</p>
+	 */
+	static final Set<String> BOSS_NAMES = ImmutableSet.of(
+		// God Wars Dungeon, all multi-combat
+		"general graardor", "sergeant strongstack", "sergeant steelwill", "sergeant grimspike",
+		"k'ril tsutsaroth", "tstanon karlak", "zakl'n gritch", "balfrug kreeyath",
+		"commander zilyana", "starlight", "growler", "bree",
+		"kree'arra", "wingman skree", "flockleader geerin", "flight kilisa",
+		// Ancient Prison
+		"nex", "fumus", "umbra", "cruor", "glacies", "blood reaver",
+		// Wilderness bosses and their singles variants
+		"callisto", "artio", "venenatis", "spindel", "vet'ion", "calvar'ion",
+		"chaos elemental", "chaos fanatic", "crazy archaeologist", "scorpia",
+		"king black dragon", "corporeal beast", "dark core",
+		// Slayer bosses
+		"cerberus", "abyssal sire", "kraken", "thermonuclear smoke devil",
+		"alchemical hydra", "grotesque guardians", "dusk", "dawn",
+		// Dagannoth Kings
+		"dagannoth rex", "dagannoth prime", "dagannoth supreme",
+		// Desert Treasure II
+		"duke sucellus", "vardorvis", "the leviathan", "the whisperer",
+		// Other single bosses
+		"zulrah", "vorkath", "giant mole", "sarachnis", "obor", "bryophyta",
+		"skotizo", "the nightmare", "phosani's nightmare", "phantom muspah",
+		"scurrius", "the hueycoatl", "amoxliatl", "araxxor", "the mimic",
+		"deranged archaeologist", "barrelchest", "tempoross", "wintertodt",
+		// Raids
+		"great olm", "tekton", "vasa nistirio", "vespula", "guardian",
+		"abyssal portal", "muttadile", "vanguard", "skeletal mystic",
+		"lizardman shaman", "verzik vitur", "xarpus", "sotetseg", "the maiden of sugadinti",
+		"pestilent bloat", "nylocas vasilias", "the nylocas", "akkha", "ba-ba",
+		"kephri", "zebak", "tumeken's warden", "elidinis' warden", "obelisk",
+		// Fight Caves / Inferno
+		"tztok-jad", "tzkal-zuk", "jaltok-jad", "yt-hurkot", "jal-mejrah"
+	);
+
 	@Inject
 	private Client client;
 
@@ -243,6 +291,11 @@ public class MultiTaggerPlugin extends Plugin
 	/**
 	 * Record the name of an NPC the local player attacked. Returns true if this added
 	 * a new type (so a rebuild is worthwhile).
+	 *
+	 * <p>Only attackable NPCs count. {@code InteractingChanged} fires for EVERY
+	 * interaction - talking to a banker, trading, pickpocketing - so without this check
+	 * simply speaking to an NPC in a multi-combat area added its name and highlighted
+	 * every other one of its kind.</p>
 	 */
 	private boolean rememberAttacked(Actor target)
 	{
@@ -250,8 +303,9 @@ public class MultiTaggerPlugin extends Plugin
 		{
 			return false;
 		}
-		String name = target.getName();
-		if (name == null)
+		NPC npc = (NPC) target;
+		String name = npc.getName();
+		if (name == null || !isAttackable(npc) || isExcludedBoss(name))
 		{
 			return false;
 		}
@@ -259,6 +313,48 @@ public class MultiTaggerPlugin extends Plugin
 		attackedNames.remove(name);
 		attackedNames.add(name);
 		return true;
+	}
+
+	/**
+	 * Whether an NPC can actually be attacked, i.e. it has an "Attack" menu option.
+	 *
+	 * <p>Read from the TRANSFORMED composition, since a multiloc NPC's base composition
+	 * carries the options of whichever variant the cache lists first, not the one on
+	 * screen.</p>
+	 */
+	private boolean isAttackable(NPC npc)
+	{
+		NPCComposition composition = npc.getTransformedComposition();
+		if (composition == null)
+		{
+			return false;
+		}
+		String[] actions = composition.getActions();
+		if (actions == null)
+		{
+			return false;
+		}
+		for (String action : actions)
+		{
+			if (ATTACK_ACTION.equalsIgnoreCase(action))
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * Whether this NPC belongs to a boss encounter, which tagging does not apply to.
+	 *
+	 * <p>A boss is fought as a single target: there is no second one to tag, and
+	 * highlighting it - or its minions - during an encounter is noise at exactly the moment
+	 * the screen needs to be readable. Several boss rooms are also multi-combat, so the
+	 * multi check alone does not exclude them.</p>
+	 */
+	private boolean isExcludedBoss(String name)
+	{
+		return config.excludeBosses() && BOSS_NAMES.contains(name.toLowerCase(Locale.ROOT));
 	}
 
 	private boolean shouldHighlight(NPC npc)
@@ -270,6 +366,19 @@ public class MultiTaggerPlugin extends Plugin
 
 		String name = npc.getName();
 		if (name == null)
+		{
+			return false;
+		}
+
+		// Not attackable: talking to an NPC also counts as interacting with it, so without
+		// this a banker or shopkeeper could end up highlighted.
+		if (!isAttackable(npc))
+		{
+			return false;
+		}
+
+		// Part of a boss encounter, which tagging does not apply to.
+		if (isExcludedBoss(name))
 		{
 			return false;
 		}

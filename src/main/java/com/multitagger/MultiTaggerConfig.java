@@ -128,6 +128,17 @@ public interface MultiTaggerConfig extends Config
 
 	@ConfigItem(
 		position = 8,
+		keyName = "excludeBosses",
+		name = "Exclude boss encounters",
+		description = "Never highlight NPCs that are part of a boss fight. A boss is fought as a single target, so there is nothing to tag, and several boss rooms are multi-combat - which is why the multi check alone does not exclude them."
+	)
+	default boolean excludeBosses()
+	{
+		return true;
+	}
+
+	@ConfigItem(
+		position = 9,
 		keyName = "maxDistance",
 		name = "Max distance (tiles)",
 		description = "Only highlight NPCs within this many tiles of you, so walking away from a monster that resets clears its highlight promptly. 0 = no limit."
@@ -139,7 +150,7 @@ public interface MultiTaggerConfig extends Config
 
 	@Range(min = 0, max = 20)
 	@ConfigItem(
-		position = 9,
+		position = 10,
 		keyName = "tagGraceTicks",
 		name = "Tag grace (ticks)",
 		description = "How long an NPC stays treated as tagged after its health bar disappears. Bridges the brief dropouts caused by the game only drawing 6 health bars at once. Keep low so monsters that reset (drop aggro) are re-highlighted quickly."
@@ -150,7 +161,7 @@ public interface MultiTaggerConfig extends Config
 	}
 
 	@ConfigItem(
-		position = 10,
+		position = 11,
 		keyName = "prioritizeUntagged",
 		name = "Left-click untagged first",
 		description = "When an untagged (highlighted) NPC and a tagged one are stacked under the cursor, make the untagged one the left-click target so you can tag it without right-clicking."
